@@ -39,31 +39,53 @@ trait WithRuntimeUniverse {
   import global._
 
   def verbose = false
-  
+
+  def warning(pos: Position, msg: String) =
+    println(msg + " (" + pos + ")")
+
   def withSymbol[T <: Tree](sym: Symbol, tpe: Type = NoType)(tree: T): T = tree
-  def typed[T <: Tree](tree: T): T = tree
+  def typed[T <: Tree](tree: T): T = {
+    // if (tree.tpe == null && tree.tpe == NoType)
+    //   toolbox.typeCheck(tree.asInstanceOf[toolbox.u.Tree]).asInstanceOf[T]
+    // else
+    tree
+  }
   def inferImplicitValue(pt: Type): Tree =
     toolbox.inferImplicitValue(pt.asInstanceOf[toolbox.u.Type]).asInstanceOf[global.Tree]
-  def setInfo(sym: Symbol, tpe: Type): Symbol = sym
-  def setType(sym: Symbol, tpe: Type): Symbol = sym
-  def setType(tree: Tree, tpe: Type): Tree = tree
-  def setPos(tree: Tree, pos: Position): Tree = tree
-  
+
   lazy val toolbox = cm.mkToolBox()
-  def typeCheck(x: Expr[_]): Tree = 
+
+  def typeCheck(x: Expr[_]): Tree =
     typeCheck(x.tree)
+
   def typeCheck(tree: Tree, pt: Type = WildcardType): Tree = {
     val ttree = tree.asInstanceOf[toolbox.u.Tree]
     if (ttree.tpe != null && ttree.tpe != NoType)
       tree
     else {
       try {
-        toolbox.typeCheck(
-          ttree, 
-          pt.asInstanceOf[toolbox.u.Type])
-      } catch { case ex: Throwable =>
-        throw new RuntimeException(s"Failed to typeCheck($tree, $pt): $ex", ex)
+        toolbox.typecheck(
+          ttree,
+          pt = pt.asInstanceOf[toolbox.u.Type])
+      } catch {
+        case ex: Throwable =>
+          val exx = new RuntimeException(s"Failed to typeCheck($tree, $pt): $ex", ex)
+          exx.printStackTrace()
+          exx
       }
     }.asInstanceOf[Tree]
   }
+
+  // def cleanTypeCheck(tree: Tree): Tree = {
+  //   toolbox.typeCheck(toolbox.resetAllAttrs(tree.asInstanceOf[toolbox.u.Tree])).asInstanceOf[Tree]
+  // }
+
+  def resetLocalAttrs(tree: Tree): Tree = {
+    toolbox.untypecheck(tree.asInstanceOf[toolbox.u.Tree]).asInstanceOf[Tree]
+  }
+
+  // def resetAllAttrs(tree: Tree): Tree = {
+  //   toolbox.resetAllAttrs(tree.asInstanceOf[toolbox.u.Tree]).asInstanceOf[Tree]
+  // }
+
 }

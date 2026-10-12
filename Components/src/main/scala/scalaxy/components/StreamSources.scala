@@ -9,10 +9,9 @@ package scalaxy.components
 import scala.reflect.api.Universe
 
 trait StreamSources
-extends Streams
-with StreamSinks
-with CommonScalaNames 
-{
+    extends Streams
+    with StreamSinks
+    with CommonScalaNames {
   val global: Universe
   import global._
   import definitions._
@@ -21,7 +20,7 @@ with CommonScalaNames
     def tree: Tree
     def array: Tree
     def componentType: Type
-    
+
     override def unwrappedTree = array
     override def privilegedDirection = None
     def emit(direction: TraversalDirection)(implicit loop: Loop) = {
@@ -31,35 +30,36 @@ with CommonScalaNames
       val skipFirst = false // TODO
       val reverseOrder = direction == FromRight
 
-      val aVar = newVariable("array$", currentOwner, pos, false, transform(array))
-      val nVar = newVariable("n$", currentOwner, pos, false, newArrayLength(aVar()))
-      val iVar = newVariable("i$", currentOwner, pos, true,
+      val aVal = newVal("array$", transform(array), getArrayType(componentType))
+      val nVal = newVal("n$", newArrayLength(aVal()), IntTpe)
+      val iVar = newVar("i$",
         if (reverseOrder) {
           if (skipFirst)
-            intSub(nVar(), newInt(1))
+            intSub(nVal(), newInt(1))
           else
-            nVar()
+            nVal()
         } else {
           if (skipFirst)
             newInt(1)
           else
             newInt(0)
-        }
+        },
+        IntTpe
       )
-        
-      val itemVar = newVariable("item$", currentOwner, pos, false, newApply(pos, aVar(), iVar()))
-        
-      loop.preOuter += aVar.definition
-      loop.preOuter += nVar.definition
+
+      val itemVal = newVal("item$", newApplyCall(aVal(), iVar()), componentType)
+
+      loop.preOuter += aVal.definition
+      loop.preOuter += nVal.definition
       loop.preOuter += iVar.definition
       loop.tests += (
         if (reverseOrder)
-          binOp(iVar(), IntTpe.member(GT), newInt(0))
+          binOp(iVar(), GT, newInt(0))
         else
-          binOp(iVar(), IntTpe.member(LT), nVar())
+          binOp(iVar(), LT, nVal())
       )
-      
-      loop.preInner += itemVar.definition
+
+      loop.preInner += itemVal.definition
       loop.postInner += (
         if (reverseOrder)
           decrementIntVar(iVar, newInt(1))
@@ -67,47 +67,46 @@ with CommonScalaNames
           incrementIntVar(iVar, newInt(1))
       )
       new StreamValue(
-        value = itemVar,
+        value = itemVal,
         valueIndex = Some(iVar),
-        valuesCount = Some(nVar)
+        valuesCount = Some(nVal)
       )
     }
   }
-  case class WrappedArrayStreamSource(tree: Tree, array: Tree, componentType: Type) 
-  extends AbstractArrayStreamSource 
-  with CanCreateArraySink
-  with SideEffectFreeStreamComponent
-  {
-    override def isResultWrapped = true 
+  case class WrappedArrayStreamSource(tree: Tree, array: Tree, componentType: Type)
+      extends AbstractArrayStreamSource
+      with CanCreateArraySink
+      with SideEffectFreeStreamComponent {
+    override def isResultWrapped = true
   }
-  
-  abstract class ExplicitCollectionStreamSource(val tree: Tree, items: List[Tree], val componentType: Type) 
-  extends AbstractArrayStreamSource {
-    val array = newArrayApply(newTypeTree(componentType), items:_*)
-    
+
+  abstract class ExplicitCollectionStreamSource(val tree: Tree, items: List[Tree], val componentType: Type)
+      extends AbstractArrayStreamSource {
+    override val array: Tree = newArrayApply(TypeTree(componentType), items: _*)
+
     override def analyzeSideEffectsOnStream(analyzer: SideEffectsAnalyzer) =
-      analyzer.analyzeSideEffects(tree, items:_*)
+      analyzer.analyzeSideEffects(tree, items: _*)
   }
-  case class ListStreamSource(tree: Tree, componentType: Type) 
-  extends StreamSource 
-  with CanCreateListSink
-  with SideEffectFreeStreamComponent {
+  case class ListStreamSource(tree: Tree, componentType: Type)
+      extends StreamSource
+      with CanCreateListSink
+      with SideEffectFreeStreamComponent {
     val list = tree // TODO 
-      
+
     override def unwrappedTree = list
     override def privilegedDirection = Some(FromLeft)
     def emit(direction: TraversalDirection)(implicit loop: Loop) = {
       import loop.{ currentOwner, transform }
       assert(direction == FromLeft)
-      
+
       val pos = list.pos
 
       val skipFirst = false // TODO
       val colTpe = list.tpe
-      
-      val aVar = newVariable("list$", currentOwner, pos, true, transform(list))
-      val itemVar = newVariable("item$", currentOwner, pos, false, newSelect(aVar(), headName))
-      
+
+      val aVar = newVar("list$", transform(list), getListType(componentType))
+      val itemVar = newVal("item$", newSelect(aVar(), headName), componentType)
+
       loop.preOuter += aVar.definition
       loop.tests += (
         if ("1" == System.getenv("SCALACL_LIST_TEST_ISEMPTY")) // Safer, but 10% slower
@@ -115,7 +114,7 @@ with CommonScalaNames
         else
           newIsInstanceOf(aVar(), appliedType(NonEmptyListClass.asType.toType.typeConstructor, List(componentType)))
       )
-      
+
       loop.preInner += itemVar.definition
       loop.postInner += (
         typeCheck(
@@ -129,63 +128,61 @@ with CommonScalaNames
       new StreamValue(itemVar)
     }
   }
-  
-  case class RangeStreamSource(tree: Tree, from: Tree, to: Tree, byValue: Int, isUntil: Boolean) 
-  extends StreamSource 
-  with CanCreateVectorSink
-  with SideEffectFreeStreamComponent {
+
+  case class RangeStreamSource(tree: Tree, from: Tree, to: Tree, byValue: Int, isUntil: Boolean, itemTpe: Type)
+      extends StreamSource
+      with CanCreateVectorSink
+      with SideEffectFreeStreamComponent {
     override def privilegedDirection = Some(FromLeft)
 
     def emit(direction: TraversalDirection)(implicit loop: Loop) = {
       assert(direction == FromLeft)
       import loop.{ currentOwner, transform }
       val pos = tree.pos
-      
-      val fromVar = newVariable("from$", currentOwner, tree.pos, false, typeCheck(transform(from), IntTpe))
-      val toVar = newVariable("to$", currentOwner, tree.pos, false, typeCheck(transform(to), IntTpe))
-      val itemVar = newVariable("item$", currentOwner, tree.pos, true, fromVar())
-      val itemVal = newVariable("item$val$", currentOwner, tree.pos, false, itemVar())
-      
+
+      val fromVal = newVal("from$", transform(from), itemTpe)
+      val toVal = newVal("to$", transform(to), itemTpe)
+      val itemVar = newVar("item$", fromVal(), itemTpe)
+      val itemVal = newVal("item$val$", itemVar(), itemTpe)
+
       val size = {
-        val span = intSub(toVar(), fromVar())
-        val width = if (isUntil) 
+        val span = intSub(toVal(), fromVal())
+        val width = if (isUntil)
           span
         else
           intAdd(span, newInt(1))
-        
+
         if (byValue == 1)
           width
         else
           intDiv(width, newInt(byValue))
       }
-      val sizeVal = newVariable("outputSize$", currentOwner, tree.pos, false, size)
-      val iVar = newVariable("outputIndex$", currentOwner, tree.pos, true, newInt(0))//if (reverseOrder) intSub(outputSizeVar(), newInt(1)) else newInt(0))
-      val iVal = newVariable("i", currentOwner, tree.pos, true, iVar())//if (reverseOrder) intSub(outputSizeVar(), newInt(1)) else newInt(0))
+      val sizeVal = newVal("outputSize$", size, itemTpe)
+      val iVar = newVar("outputIndex$", newInt(0), itemTpe) //if (reverseOrder) intSub(outputSizeVar(), newInt(1)) else newInt(0))
+      val iVal = newVal("i", iVar(), itemTpe) //if (reverseOrder) intSub(outputSizeVar(), newInt(1)) else newInt(0))
 
-      loop.preOuter += fromVar.definition
-      loop.preOuter += toVar.definition
+      loop.preOuter += fromVal.definition
+      loop.preOuter += toVal.definition
       loop.preOuter += itemVar.definition
       loop.preOuter += (sizeVal.defIfUsed _)
       loop.preOuter += (() => if (iVal.identUsed) Some(iVar.definition) else None)
       loop.tests += (
         binOp(
           itemVar(),
-          IntTpe.member(
-            if (isUntil) {
-              if (byValue < 0) GT else LT
-            } else {
-              if (byValue < 0) GE else LE
-            }
-          ),
-          toVar()
+          if (isUntil) {
+            if (byValue < 0) GT else LT
+          } else {
+            if (byValue < 0) GE else LE
+          },
+          toVal()
         )
       )
       loop.preInner += itemVal.definition // it's important to keep a non-mutable local reference !
       loop.preInner += (iVal.defIfUsed _)
-      
+
       loop.postInner += incrementIntVar(itemVar, newInt(byValue))
       loop.postInner += (() => iVal.ifUsed { incrementIntVar(iVar, newInt(1)) })
-      
+
       new StreamValue(
         value = itemVal,
         valueIndex = Some(iVal),
@@ -193,22 +190,21 @@ with CommonScalaNames
       )
     }
   }
-  case class OptionStreamSource(tree: Tree, componentOption: Option[Tree], onlyIfNotNull: Boolean, componentType: Type) 
-  extends StreamSource 
-  with CanCreateOptionSink
-  with SideEffectFreeStreamComponent 
-  {
+  case class OptionStreamSource(tree: Tree, componentOption: Option[Tree], onlyIfNotNull: Boolean, componentType: Type)
+      extends StreamSource
+      with CanCreateOptionSink
+      with SideEffectFreeStreamComponent {
     def emit(direction: TraversalDirection)(implicit loop: Loop) = {
       import loop.{ currentOwner, transform }
       val pos = tree.pos
-      
+
       loop.isLoop = false
-      
-      val (valueVar: VarDef, isDefinedVar: VarDef, isAlwaysDefined: Boolean) = componentOption match {
+
+      val (valueVar: ValueDef, isDefinedVar: ValueDef, isAlwaysDefined: Boolean) = componentOption match {
         case Some(component) =>
-          val valueVar = newVariable("value$", currentOwner, pos, false, transform(component))
-          val (isDefinedValue, isAlwaysDefined) = 
-            if (onlyIfNotNull && !isAnyVal(component.tpe)) 
+          val valueVar = newVal("value$", transform(component), componentType)
+          val (isDefinedValue, isAlwaysDefined) =
+            if (onlyIfNotNull && !isAnyVal(component.tpe))
               component match {
                 case Literal(Constant(v)) =>
                   val isAlwaysDefined = v != null
@@ -216,15 +212,15 @@ with CommonScalaNames
                 case _ =>
                   (newIsNotNull(valueVar()), false)
               }
-            else 
+            else
               (newBool(true), true)
-          val isDefinedVar = newVariable("isDefined$", currentOwner, pos, false, isDefinedValue)
+          val isDefinedVar = newVal("isDefined$", isDefinedValue, BooleanTpe)
           loop.preOuter += valueVar.definition
           (valueVar, isDefinedVar, isAlwaysDefined)
         case None =>
-          val optionVar = newVariable("option$", currentOwner, pos, false, transform(tree))
-          val isDefinedVar = newVariable("isDefined$", currentOwner, pos, false, newSelect(optionVar(), N("isDefined")))
-          val valueVar = newVariable("value$", currentOwner, pos, false, newSelect(optionVar(), N("get")))
+          val optionVar = newVal("option$", transform(tree), getOptionType(componentType))
+          val isDefinedVar = newVal("isDefined$", newSelect(optionVar(), N("isDefined")), BooleanTpe)
+          val valueVar = newVal("value$", newSelect(optionVar(), N("get")), componentType)
           loop.preOuter += optionVar.definition
           loop.preInner += valueVar.definition
           (valueVar, isDefinedVar, false)
@@ -234,7 +230,7 @@ with CommonScalaNames
         loop.tests += isDefinedVar()
       } else
         loop.tests += newBool(true)
-      
+
       new StreamValue(
         value = valueVar,
         valueIndex = Some(() => newInt(0)),
@@ -242,28 +238,30 @@ with CommonScalaNames
           if (isAlwaysDefined)
             newInt(1)
           else
-            If(isDefinedVar(), newInt(1), newInt(0)) 
+            If(isDefinedVar(), newInt(1), newInt(0))
         })
       )
     }
   }
-  
-  case class ArrayApplyStreamSource(override val tree: Tree, components: List[Tree], override val componentType: Type) 
-  extends ExplicitCollectionStreamSource(tree, components, componentType) 
-  with CanCreateArraySink
-  {
-    override def isResultWrapped = false 
+
+  case class ArrayApplyStreamSource(override val tree: Tree, components: List[Tree], override val componentType: Type)
+      extends ExplicitCollectionStreamSource(tree, components, componentType)
+      with CanCreateArraySink {
+    override def isResultWrapped = false
   }
-  
-  case class SeqApplyStreamSource(override val tree: Tree, components: List[Tree], override val componentType: Type) 
-  extends ExplicitCollectionStreamSource(tree, components, componentType) with CanCreateListSink // default Seq implementation is List
-  
-  case class IndexedSeqApplyStreamSource(override val tree: Tree, components: List[Tree], override val componentType: Type) 
-  extends ExplicitCollectionStreamSource(tree, components, componentType) with CanCreateVectorSink // default IndexedSeq implementation is Vector
-  
-  case class ListApplyStreamSource(override val tree: Tree, components: List[Tree], override val componentType: Type) 
-  extends ExplicitCollectionStreamSource(tree, components, componentType) with CanCreateListSink
-  
+
+  case class SeqApplyStreamSource(override val tree: Tree, components: List[Tree], override val componentType: Type)
+    extends ExplicitCollectionStreamSource(tree, components, componentType) with CanCreateListSink // default Seq implementation is List
+
+  case class IndexedSeqApplyStreamSource(override val tree: Tree, components: List[Tree], override val componentType: Type)
+    extends ExplicitCollectionStreamSource(tree, components, componentType) with CanCreateVectorSink // default IndexedSeq implementation is Vector
+
+  case class VectorApplyStreamSource(override val tree: Tree, components: List[Tree], override val componentType: Type)
+    extends ExplicitCollectionStreamSource(tree, components, componentType) with CanCreateVectorSink // default IndexedSeq implementation is Vector
+
+  case class ListApplyStreamSource(override val tree: Tree, components: List[Tree], override val componentType: Type)
+    extends ExplicitCollectionStreamSource(tree, components, componentType) with CanCreateListSink
+
   object StreamSource {
     object By {
       def unapply(treeOpt: Option[Tree]) = treeOpt match {
@@ -294,9 +292,13 @@ with CommonScalaNames
         OptionStreamSource(tree, Some(component), onlyIfNotNull = true, component.tpe)
       case OptionTree(componentType) =>
         OptionStreamSource(tree, None, onlyIfNotNull = true, componentType)
-      case IntRange(from, to, By(byValue), isUntil, filters) =>
+      case NumRange(rangeTpe, itemTpe, from, to, By(byValue), isUntil, filters) =>
         assert(filters.isEmpty, "Filters are not empty !!!")
-        RangeStreamSource(tree, from, to, byValue, isUntil/*, filters*/)
+        RangeStreamSource(tree, from, to, byValue, isUntil /*, filters*/ , itemTpe)
     }
+    // orElse {
+    //   println("Failed: " + showRaw(tree))
+    //   None
+    // }
   }
 }

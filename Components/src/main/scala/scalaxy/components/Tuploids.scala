@@ -34,39 +34,39 @@ trait Tuploids extends CommonScalaNames {
   val global: reflect.api.Universe
   import global._
   import definitions._
-  
+
   private lazy val primTypes = Set(IntTpe, LongTpe, ShortTpe, CharTpe, BooleanTpe, DoubleTpe, FloatTpe, ByteTpe)
-  
-  def isPrimitiveType(tpe: Type) = primTypes.contains(tpe.normalize)
-  
-  def getTupleComponentTypes(tpe: Type): List[Type] = { 
+
+  def isPrimitiveType(tpe: Type) = tpe != null && primTypes.contains(tpe.dealias)
+
+  def getTupleComponentTypes(tpe: Type): List[Type] = {
     tpe match {
-      case ref @ TypeRef(pre, sym, args) 
-      if isTupleTypeRef(ref) => args
+      case ref @ TypeRef(pre, sym, args) if isTupleTypeRef(ref) => args
     }
   }
-  
+
   def isTupleTypeRef(ref: TypeRef): Boolean = {
     !ref.args.isEmpty &&
-    ref.pre.typeSymbol == ScalaPackageClass && 
-    ref.sym.name.toString.matches("Tuple\\d+")
+      ref.pre.typeSymbol == ScalaPackageClass &&
+      ref.sym.name.toString.matches("Tuple\\d+")
   }
-  
+
   def isTupleType(tpe: Type): Boolean = {
     tpe match {
-      case ref @ TypeRef(pre, sym, args)
-      if isTupleTypeRef(ref) =>
+      case ref @ TypeRef(pre, sym, args) if isTupleTypeRef(ref) =>
         true
       case _ =>
+        //if (tpe != null)
+        //  println("NOT A TUPLE TYPE: " + tpe + ": " + tpe.getClass.getName)
         //if (tpe.toString.contains("Tuple"))
-        //println(s"tpe($tpe: ${tpe.getClass.getName}).typeConstructor = ${tpe.typeConstructor} (${tpe.typeSymbol})")
+        //  println(s"tpe($tpe: ${tpe.getClass.getName}).typeConstructor = ${tpe.typeConstructor} (${tpe.typeSymbol})")
         false
     }
   }
-  
+
   private def isValOrVar(s: Symbol): Boolean =
     s.isTerm && !s.isMethod && !s.isJava
-  
+
   private def isStableNonLazyVal(ts: TermSymbol): Boolean = {
     //println(s"""
     //  isVal = ${ts.isVal}
@@ -90,14 +90,14 @@ trait Tuploids extends CommonScalaNames {
       true
     }
   }
-  
+
   // A tuploid is a scalar, a tuple of tuploids or an immutable case class with tuploid fields.
-  def isTuploidType(tpe: Type): Boolean = { 
+  def isTuploidType(tpe: Type): Boolean = tpe != null && {
     isPrimitiveType(tpe) ||
-    isTupleType(tpe) && getTupleComponentTypes(tpe).forall(isTuploidType _) ||
-    {
-      tpe.declarations.exists(isValOrVar _) &&
-      tpe.declarations.forall(isImmutableClassMember _)
-    }
+      isTupleType(tpe) && getTupleComponentTypes(tpe).forall(isTuploidType _) ||
+      {
+        tpe.decls.exists(isValOrVar _) &&
+          tpe.decls.forall(isImmutableClassMember _)
+      }
   }
 }
