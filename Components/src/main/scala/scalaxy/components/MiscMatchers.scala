@@ -31,6 +31,7 @@
 package scalaxy.components
 
 import scala.reflect.api.Universe
+import scala.collection.immutable.NumericRange
 
 trait MiscMatchers extends Tuploids {
   val global: Universe
@@ -55,33 +56,33 @@ trait MiscMatchers extends Tuploids {
     case AppliedTypeTree(f, _) => methPart(f)
     case _ => tree
   }
-  
+
   /** Strips apply nodes looking for type application. */
   def typeArgs(tree: Tree): List[Tree] = tree match {
-    case Apply(fn, _)              => typeArgs(fn)
-    case TypeApply(fn, args)       => args
+    case Apply(fn, _) => typeArgs(fn)
+    case TypeApply(fn, args) => args
     case AppliedTypeTree(fn, args) => args
-    case _                         => Nil
+    case _ => Nil
   }
   /** Smashes directly nested applies down to catenate the argument lists. */
   def flattenApply(tree: Tree): List[Tree] = tree match {
-    case Apply(fn, args)  => flattenApply(fn) ++ args
-    case _                => Nil
+    case Apply(fn, args) => flattenApply(fn) ++ args
+    case _ => Nil
   }
   def flattenApplyGroups(tree: Tree): List[List[Tree]] = tree match {
-    case Apply(fn, args)  => flattenApplyGroups(fn) :+ args
-    case _                => Nil
+    case Apply(fn, args) => flattenApplyGroups(fn) :+ args
+    case _ => Nil
   }
   /** Smashes directly nested selects down to the inner tree and a list of names. */
   def flattenSelect(tree: Tree): (Tree, List[Name]) = tree match {
     case Select(qual, name) => flattenSelect(qual) match { case (t, xs) => (t, xs :+ name) }
-    case _                  => (tree, Nil)
+    case _ => (tree, Nil)
   }
   /** Creates an Ident or Select from a list of names. */
   def mkSelect(names: TermName*): Tree = names.toList match {
-    case Nil        => EmptyTree
-    case x :: Nil   => Ident(x)
-    case x :: xs    => xs.foldLeft(Ident(x): Tree)(Select(_, _))
+    case Nil => EmptyTree
+    case x :: Nil => Ident(x)
+    case x :: xs => xs.foldLeft(Ident(x): Tree)(Select(_, _))
   }
 
   class Ids(start: Long = 1) {
@@ -94,20 +95,27 @@ trait MiscMatchers extends Tuploids {
   }
 
   object ScalaMathFunction {
-    /** I'm all for avoiding "magic strings" but in this case it's hard to
+    /**
+     * I'm all for avoiding "magic strings" but in this case it's hard to
      *  see the twice-as-long identifiers as much improvement.
      */
     def apply(functionName: String, args: List[Tree]) =
-      Apply(mkSelect("scala", "math", "package", functionName), args)
-        
+      Apply(
+        mkSelect(
+          TermName("scala"),
+          TermName("math"),
+          TermName("package"),
+          TermName(functionName)),
+        args)
+
     def unapply(tree: Tree): Option[(Type, Name, List[Tree])] = tree match {
       case Apply(f @ Select(left, name), args) =>
         if (left.symbol == ScalaMathPackage ||
-            left.symbol == ScalaMathPackageClass || 
-            left.tpe == ScalaMathPackageClass.asType.toType)
+          left.symbol == ScalaMathPackageClass ||
+          left.tpe == ScalaMathPackageClass.asType.toType)
           Some((f.tpe, name, args))
-        else if (tree.symbol != NoSymbol && 
-            tree.symbol.owner == ScalaMathCommonClass)
+        else if (tree.symbol != NoSymbol &&
+          tree.symbol.owner == ScalaMathPackage) // ScalaMathCommonClass)
           Some((f.tpe, name, args))
         else
           None
@@ -115,36 +123,44 @@ trait MiscMatchers extends Tuploids {
         None
     }
   }
-  object IntRange {
-    def apply(from: Tree, to: Tree, by: Option[Tree], isUntil: Boolean, filters: List[Tree]) = sys.error("not implemented")
 
-    def unapply(tree: Tree): Option[(Tree, Tree, Option[Tree], Boolean, List[Tree])] = tree match {
-      case Apply(Select(Apply(Select(Predef(), intWrapperName()), List(from)), funToName @ (toName() | untilName())), List(to)) =>
-        Option(funToName) collect {
-          case toName() =>
-            (from, to, None, false, Nil)
-          case untilName() =>
-            (from, to, None, true, Nil)
-        }
-      case Apply(Select(tg, n @ (byName() | withFilterName() | filterName())), List(arg)) =>
-       tg match {
-          case IntRange(from, to, by, isUntil, filters) =>
-            Option(n) collect {
-                case byName() if by == None =>
-                    (from, to, Some(arg), isUntil, filters)
-                case withFilterName() | filterName() /* if !options.stream */ =>
-                    (from, to, by, isUntil, filters :+ arg)
+  object NumRange {
+    def apply(rangeTpe: Type, numTpe: Type, from: Tree, to: Tree, by: Option[Tree], isUntil: Boolean, filters: List[Tree]) = sys.error("not implemented")
+
+    object WrapperName {
+      def apply(rangeTpe: Type, numTpe: Type) = ???
+      def unapply(name: Name): Option[(Type, Type)] = Option(name) collect {
+        case N("intWrapper") => (typeOf[Range], IntTpe)
+        case N("longWrapper") => (typeOf[NumericRange[Long]], LongTpe)
+      }
+    }
+    def unapply(tree: Tree): Option[(Type, Type, Tree, Tree, Option[Tree], Boolean, List[Tree])] = {
+      if (tree.tpe == null || tree.tpe <:< typeOf[Range] || tree.tpe <:< typeOf[NumericRange[Long]])
+        tree match {
+          case Apply(Select(Apply(Select(PredefModuleTree(), WrapperName(rangeTpe, numTpe)), List(from)), N(funToName @ ("to" | "until"))), List(to)) =>
+            Some((rangeTpe, numTpe, from, to, None, funToName == "until", Nil))
+          case Apply(Select(tg, N(n @ ("by" | "withFilter" | "filter"))), List(arg)) =>
+            tg match {
+              case NumRange(rangeTpe, numTpe, from, to, by, isUntil, filters) =>
+                Option(n) collect {
+                  case "by" if by == None =>
+                    (rangeTpe, numTpe, from, to, Some(arg), isUntil, filters)
+                  case "withFilter" | "filter" /* if !options.stream */ =>
+                    (rangeTpe, numTpe, from, to, by, isUntil, filters :+ arg)
+                }
+              case _ =>
+                None
             }
           case _ =>
             None
         }
-      case _ => 
+      else
         None
     }
   }
 
   object TreeWithSymbol {
-    def unapply(tree: Tree): Option[(Tree, Symbol)] = 
+    def unapply(tree: Tree): Option[(Tree, Symbol)] =
       Some(tree, tree.symbol)
   }
   object TreeWithType {
@@ -152,17 +168,17 @@ trait MiscMatchers extends Tuploids {
       Some((tree, if (tree.tpe == null) null else normalize(tree.tpe)))
   }
   object SymbolWithOwnerAndName {
-    def unapply(sym: Symbol): Option[(Symbol, Symbol, Name)] = 
+    def unapply(sym: Symbol): Option[(Symbol, Symbol, Name)] =
       Some(sym, sym.owner, sym.name)
   }
   object TupleClass {
     def unapply(sym: Symbol): Boolean =
       isTupleSymbol(sym)
   }
-  
+
   object tupleComponentName {
     val rx = "_(\\d+)".r
-    def unapply(n: Name): Option[Int] = { 
+    def unapply(n: Name): Option[Int] = {
       n.toString match {
         case rx(n) =>
           Some(n.toInt)
@@ -171,7 +187,7 @@ trait MiscMatchers extends Tuploids {
       }
     }
   }
-  
+
   object TupleComponent {
     val rx = "_(\\d+)".r
     def unapply(tree: Tree) = tree match {
@@ -192,15 +208,15 @@ trait MiscMatchers extends Tuploids {
       case Select(target, tupleComponentName(n)) =>
         //fieldName.toString match {
         //  case rx(n) =>
-            if (tree.symbol != NoSymbol && isTupleSymbol(tree.symbol.owner) || isTupleSymbol(target.tpe.typeSymbol)) {
-              Some(target, n - 1)
-            } else {
-              println("ISSUE with tuple target symbol \n\t" + target.symbol + "\n\t" + target.tpe.typeSymbol)
-              None
-            }
-          //case _ =>
-          //  None
-        //}
+        if (tree.symbol != NoSymbol && isTupleSymbol(tree.symbol.owner) || isTupleSymbol(target.tpe.typeSymbol)) {
+          Some(target, n - 1)
+        } else {
+          println("ISSUE with tuple target symbol \n\t" + target.symbol + "\n\t" + target.tpe.typeSymbol)
+          None
+        }
+      //case _ =>
+      //  None
+      //}
       case _ =>
         None
     }
@@ -227,20 +243,19 @@ trait MiscMatchers extends Tuploids {
   }
   object WhileLoop {
     def unapply(tree: Tree) = tree match {
-      case
-        LabelDef(
-          lab,
-          List(),
-          If(
-            condition,
-            Block(
-              content,
-              Apply(
-                Ident(lab2),
-                List()
+      case LabelDef(
+        lab,
+        List(),
+        If(
+          condition,
+          Block(
+            content,
+            Apply(
+              Ident(lab2),
+              List()
               )
             ),
-            Literal(Constant(()))
+          Literal(Constant(()))
           )
         ) if (lab == lab2) =>
         Some(condition, content)
@@ -255,40 +270,46 @@ trait MiscMatchers extends Tuploids {
     case _ =>
       false
   }
-  
+
   def isTupleSymbol(sym: Symbol) =
     sym.toString.matches("class Tuple\\d+")
-    
+
   def isAnyVal(tpe: Type) =
     tpe == IntTpe ||
-    tpe == ShortTpe ||
-    tpe == LongTpe ||
-    tpe == ByteTpe ||
-    tpe == DoubleTpe ||
-    tpe == FloatTpe ||
-    tpe == CharTpe ||
-    tpe == BooleanTpe
-    
-  def getArrayType(dimensions: Int, componentType: Type): Type = dimensions match {
-    case 1 => 
-      appliedType(ArrayClass.asType.toType, List(componentType))
-    case _ =>
-      assert(dimensions > 1)
-      appliedType(ArrayClass.asType.toType, List(getArrayType(dimensions - 1, componentType)))
+      tpe == ShortTpe ||
+      tpe == LongTpe ||
+      tpe == ByteTpe ||
+      tpe == DoubleTpe ||
+      tpe == FloatTpe ||
+      tpe == CharTpe ||
+      tpe == BooleanTpe
+
+  def getArrayType(componentType: Type, dimensions: Int = 1): Type = {
+    assert(dimensions >= 1)
+    appliedType(
+      // ArrayClass.asType.toType,
+      typeOf[Array[_]],
+      List(
+        if (dimensions == 1)
+          componentType
+        else
+          getArrayType(componentType, dimensions - 1)
+      )
+    )
   }
-  
-  
+
+  def getOptionType(componentType: Type) = appliedType(typeOf[Option[_]], List(componentType))
+  def getListType(componentType: Type) = appliedType(typeOf[List[_]], List(componentType))
+
   object BasicTypeApply {
     def unapply(tree: Tree): Option[(Tree, Name, List[Tree], Seq[List[Tree]])] = tree match {
-      case 
-        Apply(
-          TypeApply(
-            Select(collection, name),
-            typeArgs
+      case Apply(
+        TypeApply(
+          Select(collection, name),
+          typeArgs
           ),
-          args
-        )
-        =>
+        args
+        ) =>
         Some((collection, name, typeArgs, Seq(args)))
       case Apply(BasicTypeApply(collection, name, typeArgs, args), newArgs) =>
         Some((collection, name, typeArgs, args :+ newArgs))
@@ -296,32 +317,36 @@ trait MiscMatchers extends Tuploids {
         None
     }
   }
-  
+
   object Foreach {
     def unapply(tree: Tree): Option[(Tree, Function)] = Option(tree) collect {
-      case Apply(TypeApply(Select(collection, foreachName()), _), List(function @ Function(_, _))) =>
+      case Apply(TypeApply(Select(collection, N("foreach")), _), List(function @ Function(_, _))) =>
         (collection, function)
-      case Apply(Select(collection, foreachName()), List(function @ Function(_, _))) =>
+      case Apply(Select(collection, N("foreach")), List(function @ Function(_, _))) =>
         // Non-typed foreach lacks the TypeApply.
         (collection, function)
     }
   }
-  
-  lazy val scalaPackage = ScalaPackage 
+
+  lazy val scalaPackage = ScalaPackage
   object TupleSelect {
+    private def isTupleName(name: Name) =
+      name.toString.matches(""".*Tuple\d+""")
+
     def unapply(tree: Tree) = tree match {
-      case Select(Ident(scalaPackage), name) if name.toString.matches(""".*Tuple\d+""") =>
+      case Select(Ident(scalaPackage), name) if isTupleName(name) =>
+        true
+      case Ident(name) if isTupleName(name) =>
         true
       case _ =>
         false
       //name.toString.matches("""(_root_\.)?scala\.Tuple\d+""")
     }
   }
-  
+
   object TupleCreation {
     def unapply(tree: Tree): Option[List[Tree]] = Option(tree) collect {
-      case Apply(TypeApply(Select(TupleSelect(), applyName()), types), components)
-      if isTupleType(tree.tpe) =>
+      case Apply(TypeApply(Select(TupleSelect(), N("apply")), types), components) if isTupleType(tree.tpe) =>
         components
       case Apply(tt @ TypeTree(), components) if isTupleSymbol(tree.tpe.typeSymbol) =>
         // TODO FIX THIS BROAD HACK !!! (test tt)
@@ -329,36 +354,62 @@ trait MiscMatchers extends Tuploids {
         components
     }
   }
-  class CollectionApply(colModule: Symbol, colClass: Symbol) {
+
+  // def resolveType(t: Type) = t match {
+  //   case TypeRef(_, sym, args) if sym.asType.isAliasType =>
+  //     t.dealias
+  //   case _ =>
+  //     t
+  // }
+  class CollectionApply(colModule: Symbol, colTpe: Type) {
+    val colType = normalize(colTpe)
+    //val colTpe = colClass.typeSignature
+    def matchesColModule(s: Symbol) = {
+      s == colModule ||
+        s.typeSignature.typeSymbol == colModule ||
+        s.typeSignature.typeSymbol.toString == colModule.toString
+    }
     def apply(component: Tree) = sys.error("not implemented")
-    def unapply(tree: Tree): Option[(List[Tree], Type)] = tree match {
-      case 
-        TreeWithType(
-          Apply(TypeApply(Select(colObject, applyName()), List(tpe)), components),
-          TypeRef(_, colClass, List(componentType))
-        )
-      if colObject.symbol == colModule =>
-        //normalize(tree.tpe) match {
-        //  case TypeRef(_, colClass, List(componentType)) =>
+    def unapply(tree: Tree): Option[(List[Tree], Type)] = {
+      val tpe = normalize(tree.tpe)
+      if (tpe != null && tpe <:< colType) {
+        tree match {
+          case Apply(TypeApply(Select(colObject, N("apply")), List(_)), components) if matchesColModule(colObject.symbol) =>
+            val TypeRef(_, colClass, List(componentType)) = normalize(tree.tpe)
             Some(components, componentType)
-        //  case _ =>
-        //    None
-        //}
-      case _ =>
+          // case Apply(TypeApply(Select(colObject, N("apply")), List(_)), components) =>
+          //   val TypeRef(_, colClass, List(componentType)) = normalize(tree.tpe)
+          //   println(s"""NO DEAL:
+          //     colObject.symbol = ${colObject.symbol}
+          //     colObject.symbol.typeSignature.typeSymbol = ${colObject.symbol.typeSignature.typeSymbol}
+          //     colModule = $colModule
+          //     colModule.typeSignature.typeSymbol = ${colModule.typeSignature.typeSymbol}
+          //   """)
+          //   println
+          //   None
+          case Apply(Select(colObject, N("apply")), components) if matchesColModule(colObject.symbol) =>
+            val TypeRef(_, colClass, List(componentType)) = normalize(tree.tpe)
+            Some(components, componentType)
+          case _ =>
+            None
+        }
+      } else {
+        // println("NO DEAL: colType = " + colType + ", tree.tpe = " + tree.tpe)
         None
+      }
     }
   }
-  
-  object OptionApply extends CollectionApply(OptionModule, OptionClass)
-  object ArrayApply extends CollectionApply(ArrayModule, ArrayClass)
-  object SeqApply extends CollectionApply(SeqModule, SeqClass)
-  object IndexedSeqApply extends CollectionApply(IndexedSeqModule, IndexedSeqClass)
-  object ListApply extends CollectionApply(ListModule, ListClass)
-  
-  
+
+  object OptionApply extends CollectionApply(OptionModule, typeOf[Option[_]])
+  object ArrayApply extends CollectionApply(ArrayModule, typeOf[Array[_]])
+  object SeqApply extends CollectionApply(SeqModule, typeOf[Seq[_]])
+  object IndexedSeqApply extends CollectionApply(IndexedSeqModule, typeOf[IndexedSeq[_]])
+  object ListApply extends CollectionApply(ListModule, typeOf[List[_]])
+  object VectorApply extends CollectionApply(VectorModule, typeOf[Vector[_]])
+
   def normalize(tpe: Type): Type =
-    Option(tpe).map(_.normalize.widen).orNull
-  
+    Option(tpe).map(_.dealias.widen).orNull
+
   object OptionTree {
     val optionClass = OptionClass
     def apply(componentType: Type) = sys.error("not implemented")
@@ -366,35 +417,30 @@ trait MiscMatchers extends Tuploids {
     def unapply(tree: Tree): Option[Type] = tree match {
       case TypeTree() =>
         None
+      case _ if tree.tpe != null && tree.tpe <:< typeOf[Option[_]] =>
+        val TypeRef(_, optionClass, List(componentType)) = normalize(tree.tpe)
+        Some(componentType)
       case _ =>
-        normalize(tree.tpe) match {
-          case TypeRef(_, optionClass, List(componentType)) => 
-            //println("FOUND OPTION TREE " + tree)
-            Some(componentType)
-          case _ =>
-            None
-        }
+        None
     }
   }
-  object Predef {
+  object PredefModuleTree {
     lazy val RefArrayOps = this("refArrayOps")
     lazy val GenericArrayOps = this("genericArrayOps")
-    lazy val IntWrapper  = this("intWrapper")
-    lazy val println  = this("println")
+    lazy val IntWrapper = this("intWrapper")
+    lazy val println = this("println")
 
-    def contains(sym: Symbol)        = sym.owner == PredefModule.moduleClass
-    def apply(name: String): Symbol  = PredefModule.asModule.moduleClass.asType.toType member newTermName(name)
+    def contains(sym: Symbol) = sym.owner == PredefModule.moduleClass
+    def apply(name: String): Symbol = PredefModule.asModule.moduleClass.asType.toType member TermName(name)
     def unapply(tree: Tree): Boolean = tree.symbol == PredefModule
   }
   object ArrayOps {
     val arrayOpsClass = ArrayOpsClass
     def unapply(tree: Tree): Option[Type] = tree match {
-      case TypeApply(sel, List(arg))
-        if sel.symbol == Predef.RefArrayOps || sel.symbol == Predef.GenericArrayOps =>
+      case TypeApply(sel, List(arg)) if sel.symbol == PredefModuleTree.RefArrayOps || sel.symbol == PredefModuleTree.GenericArrayOps =>
         Some(arg.tpe)
-      case _  => tree.tpe match {
-        case MethodType(_, TypeRef(_, arrayOpsClass, List(param)))
-          if Predef contains tree.symbol =>
+      case _ => tree.tpe match {
+        case MethodType(_, TypeRef(_, arrayOpsClass, List(param))) if PredefModuleTree contains tree.symbol =>
           Some(param)
         case _ =>
           None
@@ -409,22 +455,22 @@ trait MiscMatchers extends Tuploids {
     }
   }
   object ArrayTyped extends HigherTypeParameterExtractor(ArrayClass)
-  
+
   class HigherTypeParameterExtractor(ColClass: Symbol) {
-    private def isCol(s: Symbol) = 
+    private def isCol(s: Symbol) =
       s.asType.toType == ColClass.asType.toType || s.asType.toType.toString == ColClass.asType.toType.toString
     private def isCol2(s: Symbol) =
       isCol(s) || isCol(s.asType.toType.typeSymbol)
-    
+
     def unapply(tpe: Type): Option[Type] = Option(normalize(tpe)) collect {
       case TypeRef(_, ColClass, List(param)) =>
         param
-      case TypeRef(_, cc, List(param)) if isCol2(cc) =>//tree.symbol)  => 
+      case TypeRef(_, cc, List(param)) if isCol2(cc) => //tree.symbol)  => 
         param
       case PolyType(Nil, TypeRef(_, cc, List(param))) if isCol2(cc) =>
         param
     }
-    
+
     def unapply(tree: Tree): Option[Type] = if (tree == null) None else {
       unapply(tree.tpe) match {
         case Some(s) =>
@@ -441,7 +487,7 @@ trait MiscMatchers extends Tuploids {
 
   object ArrayTabulate {
     /** This is the one all the other ones go through. */
-    lazy val tabulateSyms = ArrayModule.asModule.moduleClass.asType.toType.members.filter(_.name == tabulateName()).toSet//filter (_.paramss.flatten.size == 3)
+    lazy val tabulateSyms = ArrayModule.asModule.moduleClass.asType.toType.members.filter(_.name.toString == "tabulate").toSet //filter (_.paramLists.flatten.size == 3)
 
     def apply(componentType: Tree, lengths: List[Tree], function: Tree, manifest: Tree) = sys.error("not implemented")
     def unapply(tree: Tree): Option[(Tree, List[Tree], Tree, Tree)] = {
@@ -456,27 +502,11 @@ trait MiscMatchers extends Tuploids {
     }
   }
 
-  object TrivialCanBuildFromArg {
-    private def isCanBuildFrom(tpe: Type) =
-      tpe != null && 
-      tpe.normalize <:< CanBuildFromClass.asType.toType
-      //tpe.dealias.deconst <:< CanBuildFromClass.tpe
-
-    val n1 = N("canBuildIndexedSeqFromIndexedSeq") // ScalaCL
-    val n2 = N("canBuildArrayFromArray") // ScalaCL
-    def unapply(tree: Tree) = if (!isCanBuildFrom(tree.tpe)) None else Option(tree) collect {
-      case Apply(TypeApply(Select(comp, canBuildFromName()), List(resultType)), List(_)) =>
-        resultType
-      case Apply(TypeApply(Select(comp, n1() | n2()), List(resultType)), _) =>
-        resultType
-      case TypeApply(Select(comp, canBuildFromName()), List(resultType)) =>
-        resultType
-    }
-  }
   object CanBuildFromArg {
-    def unapply(tree: Tree) = tree match {
-      case TrivialCanBuildFromArg(_) => true
-      case _ => false
+    private val canBuildFromTpe = typeOf[scala.collection.generic.CanBuildFrom[_, _, _]]
+    def unapply(tree: Tree) = {
+      val tpe = tree.tpe
+      tpe != null && tpe <:< canBuildFromTpe
     }
   }
 

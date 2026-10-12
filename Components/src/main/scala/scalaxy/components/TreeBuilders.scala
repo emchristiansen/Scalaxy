@@ -30,280 +30,239 @@
  */
 package scalaxy.components
 
+import scala.language.implicitConversions
+import scala.language.postfixOps
+
 import scala.reflect.api.Universe
 
 trait TreeBuilders
-extends MiscMatchers
-{
+    extends MiscMatchers {
   val global: Universe
 
   import global._
   import definitions._
-  
+
   type TreeGen = () => Tree
-  
-  def withSymbol[T <: Tree](sym: Symbol, tpe: Type = NoType)(tree: T): T
+
   def typed[T <: Tree](tree: T): T
   def typeCheck(tree: Tree, pt: Type): Tree
   def fresh(s: String): String
   def inferImplicitValue(pt: Type): Tree
-  def setInfo(sym: Symbol, tpe: Type): Symbol
-  def setType(sym: Symbol, tpe: Type): Symbol
-  def setType(tree: Tree, tpe: Type): Tree
-  def setPos(tree: Tree, pos: Position): Tree
-  
-  def replaceOccurrences(
-      tree: Tree, 
-      mappingsSym: Map[Symbol, TreeGen], 
-      symbolReplacements: Map[Symbol, Symbol], 
-      treeReplacements: Map[Tree, TreeGen]) = 
-  {
-    def key(s: Symbol) =
-      ownerChain(s).map(_.toString)
-      
-    val mappings = mappingsSym.map { 
-      case (sym, treeGen) => 
-        (key(sym), (sym, treeGen)) 
-    }
-    val result = new Transformer {
-      override def transform(tree: Tree): Tree = {
-        treeReplacements.get(tree).map(_()).getOrElse(
-          tree match {
-            case Ident(n) if tree.symbol != NoSymbol =>
-              val treeKey = key(tree.symbol)
-              mappings.get(treeKey).map({ 
-                case (sym, treeGen) =>
-                  typeCheck(
-                    treeGen(),
-                    tree.symbol.asType.toType
-                  )
-              }).getOrElse(super.transform(tree))
-            case _ =>
-              super.transform(tree)
-          }
-        )
-      }
-    }.transform(tree)
 
-    //for ((fromSym, toSym) <- symbolReplacements)
-    //  new ChangeOwnerTraverser(fromSym, toSym).traverse(result)
-      
-    typed {
-      result
+  def replaceOccurrences(
+    tree: Tree,
+    mappingsSym: Map[Symbol, TreeGen],
+    symbolReplacements: Map[Symbol, Symbol],
+    treeReplacements: Map[Tree, TreeGen]) =
+    {
+      // println(s"""
+      // REPLACE OCCURRENCES:
+      //   mappingsSym: $mappingsSym
+      //   symbolReplacements: $symbolReplacements
+      //   treeReplacements: $treeReplacements
+      // """)
+      def key(s: Symbol) =
+        s //(s :: ownerChain(s)).map(_.name.toString)
+
+      val mappings = mappingsSym.map {
+        case (sym, treeGen) =>
+          (key(sym), (sym, treeGen))
+      }
+      val result = new Transformer {
+        override def transform(tree: Tree): Tree = {
+          treeReplacements.get(tree).map(_()).getOrElse(
+            tree match {
+              case Ident(n) if tree.symbol != NoSymbol =>
+                val treeKey = key(tree.symbol)
+                mappings.get(treeKey).map({
+                  case (sym, treeGen) =>
+                    // typeCheck(
+                    treeGen() //,
+                  //   if (tree.tpe != null && tree.tpe != NoType)
+                  //     tree.tpe
+                  //   else
+                  //     tree.symbol.typeSignature
+                  // )
+                }).getOrElse(super.transform(tree))
+              case _ =>
+                super.transform(tree)
+            }
+          )
+        }
+      }.transform(tree)
+
+      //for ((fromSym, toSym) <- symbolReplacements)
+      //  new ChangeOwnerTraverser(fromSym, toSym).traverse(result)
+
+      typed {
+        result
+      }
     }
-  }
-  
+
   def primaryConstructor(tpe: Type): Symbol = {
     tpe.members.iterator
       .find(s => s.isMethod && s.asMethod.isPrimaryConstructor)
       .getOrElse(sys.error("No primary constructor for " + tpe))
   }
-  
-  def apply(sym: Symbol)(target: Tree, args: List[Tree]) = {
-    withSymbol(sym) {
-      Apply(
-        withSymbol(sym) {
-          target
-        },
-        args
-      )
-    }
+
+  def defaultValue(tpe: Type): Any = tpe.dealias match {
+    case IntTpe => 0
+    case BooleanTpe => false
+    case ByteTpe => 0: Byte
+    case ShortTpe => 0: Short
+    case CharTpe => '\u0000'
+    case LongTpe => 0L
+    case FloatTpe => 0.0f
+    case DoubleTpe => 0.0
+    case s => null
   }
-  def typeApply(sym: Symbol)(target: Tree, targs: List[TypeTree]) = {
-    withSymbol(sym) {
-      TypeApply(
-        withSymbol(sym) {
-          target
-        },
-        targs
-      )
-    }
-  }
-  def newTypeTree(tpe: Type): TypeTree =
-    withSymbol(tpe.typeSymbol, tpe) { 
-      TypeTree(tpe) 
-    }
-  
+
   // TreeGen.mkIsInstanceOf adds an extra Apply (and does not set all symbols), which makes it apparently useless in our case(s)
   def newIsInstanceOf(tree: Tree, tpe: Type) = {
-    try {
-      typeApply(AnyClass.asType.toType.member(newTermName("isInstanceOf")))(
-        Select(
-          tree,
-          N("isInstanceOf")
-        ),
-        List(newTypeTree(tpe))
-      )
-    } catch { case ex: Throwable =>
-      ex.printStackTrace
-      throw new RuntimeException(ex)
-    }
+    TypeApply(
+      Select(
+        tree,
+        N("isInstanceOf")
+      ),
+      List(TypeTree(tpe))
+    )
   }
-  def newApply(pos: Position, array: => Tree, index: => Tree) = {
-    val a = array
-    assert(a.tpe != null)
-    typed {
-      atPos(pos) {
-        //a.DOT(N("apply"))(index)
-        val sym = 
-          (a.tpe member applyName())
-            .filter(s => s.isMethod && s.asMethod.paramss.size == 1)
-        apply(sym)(
-          Select(
-            a,
-            N("apply")
-          ),
-          List(index)
-        )
-      }
-    }
+  def newApplyCall(array: Tree, index: Tree) = {
+    Apply(
+      Select(
+        array,
+        N("apply")
+      ),
+      List(index)
+    )
   }
-  
+
   def newSelect(target: Tree, name: Name, typeArgs: List[TypeTree] = Nil) =
     newApply(target, name, typeArgs, null)
-    
-  def newApply(target: Tree/*, targetType: Type*/, name: Name, typeArgs: List[TypeTree] = Nil, args: List[Tree] = Nil) = {
-    val targetType = 
-      if (target.tpe == NoType || target.tpe == null) 
-        target.symbol.typeSignature 
-      else 
-        target.tpe
-        
-    val sym = targetType.member(name)
-    typed {
-      val select = withSymbol(sym) { Select(target, name) }
-      if (!typeArgs.isEmpty)
-        Apply(
-          typeApply(sym)(select, typeArgs),
-          args
-        )
-      else if (args != null)
-        Apply(select, args)
-      else
-        select
-    }
-  }
-  
-  def newInstance(tpe: Type, constructorArgs: List[Tree]) = {
-    val sym = primaryConstructor(tpe)
-    typed {
-      apply(sym)(
-        Select(
-          New(newTypeTree(tpe)),
-          sym
-        ),
-        constructorArgs
+
+  def newApply(target: Tree /*, targetType: Type*/ , name: Name, typeArgs: List[TypeTree] = Nil, args: List[Tree] = Nil) = {
+    val select = Select(target, name)
+    if (!typeArgs.isEmpty)
+      Apply(
+        TypeApply(select, typeArgs),
+        args
       )
-    }
+    else if (args != null)
+      Apply(select, args)
+    else
+      select
   }
-    
+
+  def newInstance(tpe: Type, constructorArgs: List[Tree]) = {
+    Apply(
+      Select(
+        New(TypeTree(tpe)),
+        termNames.CONSTRUCTOR
+      ),
+      constructorArgs
+    )
+  }
+
   def newCollectionApply(collectionModuleTree: => Tree, typeExpr: TypeTree, values: Tree*) =
     newApply(collectionModuleTree, applyName, List(typeExpr), values.toList)
-    
-  def newScalaPackageTree = 
+
+  def newScalaPackageTree =
     Ident(ScalaPackage)
-    
+
   def newScalaCollectionPackageTree =
-    Ident(ScalaCollectionPackage)/*
+    Ident(ScalaCollectionPackage) /*
     withSymbol(ScalaCollectionPackage) { 
       Select(newScalaPackageTree, N("collection")) 
     }*/
-    
+
   def newSomeModuleTree = typed {
     Ident(SomeModule)
     /*withSymbol(SomeModule) { 
       Select(newScalaPackageTree, N("Some"))
     }*/
   }
-    
+
   def newNoneModuleTree = typed {
-    Ident(NoneModule)/*
+    Ident(NoneModule) /*
     withSymbol(NoneModule) {
       Select(newScalaPackageTree, N("None"))
     }*/
   }
-    
+
   def newSeqModuleTree = typed {
-    Ident(SeqModule)/*
+    Ident(SeqModule) /*
     withSymbol(SeqModule) {
       Select(newScalaCollectionPackageTree, N("Seq"))
     }*/
   }
-    
+
   def newSetModuleTree = typed {
-    Ident(SetModule)/*
+    Ident(SetModule) /*
     withSymbol(SetModule) {
       Select(newScalaCollectionPackageTree, N("Set"))
     }*/
   }
-    
+
   def newArrayModuleTree = typed {
-    Ident(ArrayModule)/*
+    Ident(ArrayModule) /*
     withSymbol(ArrayModule) {
       Select(newScalaPackageTree, N("Array"))
     }*/
   }
-    
+
   def newSeqApply(typeExpr: TypeTree, values: Tree*) =
     newApply(newSeqModuleTree, applyName, List(typeExpr), values.toList)
-    
+
   def newSomeApply(tpe: Type, value: Tree) =
-    newApply(newSomeModuleTree, applyName, List(newTypeTree(tpe)), List(value))
-    
+    newApply(newSomeModuleTree, applyName, List(TypeTree(tpe)), List(value))
+
   def newArrayApply(typeExpr: TypeTree, values: Tree*) =
     newApply(newArrayModuleTree, applyName, List(typeExpr), values.toList)
-  
+
   def newArrayMulti(arrayType: Type, componentTpe: Type, lengths: => List[Tree], manifest: Tree) =
-      typed {
-        val sym = (ArrayModule.asModule.moduleClass.asType.toType member newTermName("ofDim"))
-          .suchThat(s => s.isMethod && s.asMethod.paramss.flatten.size == lengths.size + 1)
-          //.getOrElse(sys.error("No Array.ofDim found"))
-        withSymbol(sym) {
-          Apply(
-            withSymbol(sym) {
-              Apply(
-                TypeApply(
-                  withSymbol(sym) {
-                    Select(
-                      Ident(
-                        ArrayModule
-                      ),
-                      N("ofDim")
-                    )
-                  },
-                  List(newTypeTree(componentTpe))
-                ),
-               lengths
-              )
-            },
-            List(manifest)
-          )
-        }
-      }
-
-    def newArray(componentType: Type, length: => Tree) =
-      newArrayWithArrayType(appliedType(ArrayClass.asType.toType, List(componentType)), length)
-
-    def newArrayWithArrayType(arrayType: Type, length: => Tree) =
-      typed {
-        val sym = primaryConstructor(arrayType)
-        apply(sym)(
-          Select(
-            New(newTypeTree(arrayType)),
-            sym
+    typed {
+      val sym = (ArrayModule.asModule.moduleClass.asType.toType member TermName("ofDim"))
+        .suchThat(s => s.isMethod && s.asMethod.paramLists.flatten.size == lengths.size + 1)
+      //.getOrElse(sys.error("No Array.ofDim found"))
+      Apply(
+        Apply(
+          TypeApply(
+            Select(
+              Ident(
+                ArrayModule
+              ),
+              N("ofDim")
+            ),
+            List(TypeTree(componentTpe))
           ),
-          List(length)
-        )
-      }
+          lengths
+        ),
+        List(manifest)
+      )
+    }
 
-    
+  def newArray(componentType: Type, length: => Tree) =
+    newArrayWithArrayType(appliedType(ArrayClass.asType.toType, List(componentType)), length)
+
+  def newArrayWithArrayType(arrayType: Type, length: => Tree) =
+    typed {
+      val sym = primaryConstructor(arrayType)
+      Apply(
+        Select(
+          New(TypeTree(arrayType)),
+          sym
+        ),
+        List(length)
+      )
+    }
+
   def newUpdate(pos: Position, array: => Tree, index: => Tree, value: => Tree) = {
     val a = array
     assert(a.tpe != null)
     val sym = a.tpe member updateName()
     typed {
       atPos(pos) {
-        apply(sym)(
+        Apply(
           Select(
             a,
             N("update")
@@ -314,34 +273,25 @@ extends MiscMatchers
     }
   }
 
-  def binOp(a: Tree, op: Symbol, b: Tree) = typed {
-    assert(op != NoSymbol)
-    //withSymbol(op) {
-      Apply(
-        //withSymbol(op) {
-          Select(a, op),
-        //}, 
-        List(b)
-      )
-    //}
-  }
+  def binOp(a: Tree, op: TermName, b: Tree) =
+    Apply(
+      Select(a, op),
+      List(b))
 
   def newIsNotNull(target: Tree) = typed {
-    binOp(target, AnyRefClass.asType.toType.member(NE), newNull(target.tpe))
+    binOp(target, NE, newNull(target.tpe))
   }
-  
+
   def newArrayLength(a: Tree) =
-    withSymbol(a.tpe.member(lengthName()), IntTpe) {
-      Select(a, lengthName())
-    }
-  
+    Select(a, lengthName())
+
   def boolAnd(a: Tree, b: Tree) = typed {
     if (a == null)
       b
     else if (b == null)
       a
     else
-      binOp(a, BooleanTpe.member(ZAND /* AMPAMP */), b)
+      binOp(a, ZAND /* AMPAMP */ , b)
   }
   def boolOr(a: Tree, b: Tree) = typed {
     if (a == null)
@@ -349,7 +299,7 @@ extends MiscMatchers
     else if (b == null)
       a
     else
-      binOp(a, BooleanTpe.member(ZOR), b)
+      binOp(a, ZOR, b)
   }
   def ident(sym: Symbol, tpe: Type, n: Name, pos: Position = NoPosition): Ident = {
     assert(sym != NoSymbol)
@@ -359,8 +309,9 @@ extends MiscMatchers
         i,
         sym.typeSignature
       ).asInstanceOf[Ident]
-    } catch { case _: Throwable =>
-      i
+    } catch {
+      case _: Throwable =>
+        i
     }
     /*val v = Ident(sym)
     //val tpe = sym.typeSignature
@@ -369,25 +320,22 @@ extends MiscMatchers
     */
   }
 
-  def boolNot(a: => Tree) = {
-    val sym = BooleanTpe.member(UNARY_!)
-    //Apply(
-    withSymbol(sym, BooleanTpe) { Select(a, UNARY_!) }
+  def boolNot(a: Tree) = {
+    Select(a, UNARY_!)
   }
 
   def intAdd(a: => Tree, b: => Tree) =
-    binOp(a, IntTpe.member(PLUS), b)
+    binOp(a, PLUS, b)
 
   def intDiv(a: => Tree, b: => Tree) =
-    binOp(a, IntTpe.member(DIV), b)
+    binOp(a, DIV, b)
 
   def intSub(a: => Tree, b: => Tree) =
-    binOp(a, IntTpe.member(MINUS), b)
+    binOp(a, MINUS, b)
 
-  def newAssign(target: IdentGen, value: Tree) = typed {
+  def newAssign(target: IdentGen, value: Tree) =
     Assign(target(), value)
-  }
-    
+
   def incrementIntVar(identGen: IdentGen, value: Tree = newInt(1)) =
     newAssign(identGen, intAdd(identGen(), value))
 
@@ -399,59 +347,49 @@ extends MiscMatchers
     )
   }
 
-  def whileLoop(owner: Symbol, tree: Tree, cond: Tree, body: Tree): Tree =
-    whileLoop(owner, tree.pos, cond, body)
-    
-  def whileLoop(owner: Symbol, pos: Position, cond: Tree, body: Tree): Tree = {
-    val lab = newTermName(fresh("while$"))
-    val labTyp = MethodType(Nil, UnitTpe)
-    val labSym = setInfo(owner.newTermSymbol(lab, pos, Flag.LOCAL), labTyp)
-   
-    typed {
-      withSymbol(labSym) {
-        LabelDef(
-          lab,
-          Nil,
-          If(
-            cond,
-            Block(
-              if (body == null)
-                Nil
-              else
-                List(body),
-              Apply(
-                ident(labSym, NoType, lab, pos),
-                Nil
-              )
-            ),
-            newUnit
+  def whileLoop(cond: Tree, body: Tree): Tree = {
+    val lab = TermName(fresh("while$"))
+    LabelDef(
+      lab,
+      Nil,
+      If(
+        cond,
+        Block(
+          if (body == null)
+            Nil
+          else
+            List(body),
+          Apply(
+            Ident(lab),
+            Nil
           )
-        )
-      }
-    }
+        ),
+        newUnit
+      )
+    )
   }
 
   type IdentGen = () => Ident
-  
+
   private lazy val anyValTypeInfos = Seq[(Class[_], Type, AnyVal)](
-    ( classOf[java.lang.Boolean], BooleanTpe, false ),
-    ( classOf[java.lang.Integer], IntTpe, 0),
-    ( classOf[java.lang.Long], LongTpe, 0: Long),
-    ( classOf[java.lang.Short], ShortTpe, 0: Short),
-    ( classOf[java.lang.Byte], ByteTpe, 0: Byte),
-    ( classOf[java.lang.Character], CharTpe, 0.asInstanceOf[Char]),
-    ( classOf[java.lang.Double], DoubleTpe, 0.0),
-    ( classOf[java.lang.Float], FloatTpe, 0.0f)
+    (classOf[java.lang.Boolean], BooleanTpe, false),
+    (classOf[java.lang.Integer], IntTpe, 0),
+    (classOf[java.lang.Long], LongTpe, 0: Long),
+    (classOf[java.lang.Short], ShortTpe, 0: Short),
+    (classOf[java.lang.Byte], ByteTpe, 0: Byte),
+    (classOf[java.lang.Character], CharTpe, 0.asInstanceOf[Char]),
+    (classOf[java.lang.Double], DoubleTpe, 0.0),
+    (classOf[java.lang.Float], FloatTpe, 0.0f)
   )
   lazy val classToType: Map[Class[_], Type] =
     (anyValTypeInfos.map { case (cls, tpe, defVal) => cls -> tpe }).toMap
-    
+
   lazy val typeToDefaultValue: Map[Type, AnyVal] =
     (anyValTypeInfos.map { case (cls, tpe, defVal) => tpe -> defVal }).toMap
-  
+
   def newConstant(v: Any, tpe: Type = null) = typed {
     Literal(Constant(v))
-  }/*.setType(
+  } /*.setType(
       if (tpe != null) 
         tpe
       else if (v.isInstanceOf[String])
@@ -461,11 +399,11 @@ extends MiscMatchers
     )
   }*/
 
-  def newBool(v: Boolean) =   newConstant(v)
-  def newInt(v: Int) =        newConstant(v)
-  def newLong(v: Long) =      newConstant(v)
+  def newBool(v: Boolean) = newConstant(v)
+  def newInt(v: Int) = newConstant(v)
+  def newLong(v: Long) = newConstant(v)
 
-  def newNull(tpe: Type) =    newConstant(null, tpe)
+  def newNull(tpe: Type) = newConstant(null, tpe)
 
   def newDefaultValue(tpe: Type) = {
     if (isAnyVal(tpe))
@@ -479,37 +417,27 @@ extends MiscMatchers
     newConstant(1: Byte)
   }
 
-  def newUnit() = 
+  def newUnit() =
     newConstant(())
 
-  case class VarDef(rawIdentGen: IdentGen, symbol: Symbol, definition: ValDef) {
+  case class ValueDef(rawIdentGen: IdentGen, definition: ValDef, tpe: Type) {
     var identUsed = false
     val identGen: IdentGen = () => {
       identUsed = true
       rawIdentGen()
     }
-    def tpe = definition.tpe
     def apply() = identGen()
 
-    def defIfUsed = if (identUsed) Some(definition) else None
+    def defIfUsed = ifUsed(definition)
     def ifUsed[V](v: => V) = if (identUsed) Some(v) else None
   }
-  implicit def VarDev2IdentGen(vd: VarDef) = if (vd == null) null else vd.identGen
-  
-  def simpleBuilderResult(builder: Tree): Tree = typed {
-    val resultMethod = builder.tpe member resultName
-    apply(resultMethod)(
-      Select(
-        builder,
-        resultName
-      ),
-      Nil
-    )
-  }
-  
+  implicit def ValueDef2IdentGen(vd: ValueDef) = if (vd == null) null else vd.identGen
+
+  def simpleBuilderResult(builder: Tree): Tree =
+    newApply(builder, resultName)
+
   def addAssign(target: Tree, toAdd: Tree) = {
-    val sym = (target.tpe member addAssignName())
-    apply(sym)(
+    Apply(
       Select(
         target,
         addAssignName()
@@ -517,78 +445,40 @@ extends MiscMatchers
       List(toAdd)
     )
   }
-  
+
   lazy val TypeRef(manifestPre, manifestSym, _) = typeOf[Manifest[Int]]
-  def toArray(tree: Tree, componentType: Type) = typed {
-    val manifest = inferImplicitValue(typeRef(manifestPre, manifestSym, List(componentType)))
+  def toArray(tree: Tree, componentType: Type) = {
+    val manifest = inferImplicitValue(global.internal.typeRef(manifestPre, manifestSym, List(componentType)))
     assert(manifest != EmptyTree, "Failed to get manifest for " + componentType)
-    
-    val method = tree.tpe member toArrayName
-    apply(method)(
-      typeApply(method)(
+
+    Apply(
+      TypeApply(
         Select(
           tree,
           toArrayName
         ),
-        List(newTypeTree(componentType))
+        List(TypeTree(componentType))
       ),
       List(manifest)
     )
   }
-  
-  def newIf(cond: Tree, thenTree: Tree, elseTree: Tree = null) = {
-    typed { thenTree }
-    if (elseTree != null)
-      typed { elseTree }
-      
-    val tpe = {
-      if (elseTree == null)
-        UnitTpe
-      else if (thenTree.tpe == elseTree.tpe)
-        thenTree.tpe
-      else
-        throw new RuntimeException("Mismatching types between then and else : " + thenTree.tpe + " vs. " + elseTree.tpe)
-    }
-    
-    withSymbol(NoSymbol, tpe) {
-      If(cond, thenTree, Option(elseTree).getOrElse(EmptyTree))
-    }
-  }
-  
-  def newVariable(
-    prefix: String,
-    symbolOwner: Symbol,
-    pos: Position,
-    mutable: Boolean,
-    initialValue: Tree,
-    ttpe: Type = NoType
-  ): VarDef = {
-    val tpe = normalize {
-      if (ttpe != NoType)
-        ttpe
-      else 
-        (typed { initialValue }).tpe
-    }
-    //var tpe = initialValue.tpe
-    //if (ConstantType.unapply(tpe))//.isInstanceOf[ConstantType])
-    val name = fresh(prefix)
-    val sym = 
-      symbolOwner.newTermSymbol(name, pos, (if (mutable) Flag.MUTABLE else NoFlags) | Flag.LOCAL)
-    if (tpe != null && tpe != NoType)
-      setInfo(sym, tpe)
-      
-    VarDef(
-      () => ident(sym, tpe, newTermName(name), pos), 
-      sym,
-      withSymbol(sym, tpe) {
-        ValDef(
-          Modifiers(if (mutable) Flag.MUTABLE else NoFlags), 
-          name, 
-          newTypeTree(tpe), 
-          initialValue
-        )
-      }
-    )
+
+  def newIf(cond: Tree, thenTree: Tree, elseTree: Tree = null) =
+    If(cond, thenTree, Option(elseTree).getOrElse(EmptyTree))
+
+  def newVal(prefix: String, value: Tree, tpe: Type) =
+    newValueDef(prefix, false, value, tpe)
+
+  def newVar(prefix: String, value: Tree, tpe: Type) =
+    newValueDef(prefix, true, value, tpe)
+
+  private def newValueDef(prefix: String, mutable: Boolean, value: Tree, tpe: Type) = {
+    val vd = ValDef(
+      if (mutable) Modifiers(Flag.MUTABLE) else NoMods,
+      TermName(fresh(prefix)),
+      TypeTree(tpe),
+      value)
+    ValueDef(() => Ident(vd.name), vd, tpe)
   }
 }
 

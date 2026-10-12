@@ -13,7 +13,7 @@ project/target
 .classpath
 *.class
 *.marks
-
+.ensime*
 Macros/.cache
 
 Compiler/.cache
@@ -21,3 +21,8 @@ Compiler/.cache
 Core/.cache
 
 .history
+CasbahDSL.original
+react-0.12.2
+.cache
+*.sublime-project
+*.sublime-workspace
